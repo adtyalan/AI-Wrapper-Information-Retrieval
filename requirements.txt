@@ -1,0 +1,8 @@
+streamlit
+torch
+transformers
+sentence_transformers
+pandas
+altair
+PyPDF2
+nltk
