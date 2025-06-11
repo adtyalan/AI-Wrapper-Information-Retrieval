@@ -6,3 +6,4 @@ pandas
 altair
 PyPDF2
 nltk
+scipy

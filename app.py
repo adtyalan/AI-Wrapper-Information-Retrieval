@@ -1,34 +1,17 @@
-# Diasumsikan impor dan kode awal lainnya sama
-# ... (kode impor dan setup awal)
-
-# st.caption(
-#  "Aplikasi ini membandingkan performa model Bi-Encoder (msmarco-distilbert-base-v3) dan Cross-Encoder (ms-marco-MiniLM-L-6-v2) dalam Information Retrieval."
-# )
-
 import streamlit as st
 import torch
 import pandas as pd
 import altair as alt
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from PyPDF2 import PdfReader
-import nltk
 import math
+import re
+from scipy.stats import kendalltau
 
-# 1. Call st.set_page_config() IMMEDIATELY after imports
-st.set_page_config(
-    page_title="Perbandingan Bi-Encoder vs Cross-Encoder", layout="centered"
-)
-
-# 2. Then, proceed with other imports or setup that might not be Streamlit commands,
-#    or function definitions.
-try:
-    nltk.data.find("tokenizers/punkt")
-except LookupError:
-    nltk.download("punkt")
-from nltk.tokenize import sent_tokenize
+st.set_page_config(page_title="Perbandingan Bi-Encoder vs Cross-Encoder", layout="wide")
 
 
-# 3. Now define your cached functions and call them
+# --- Fungsi-fungsi di-cache untuk performa ---
 @st.cache_resource
 def load_models():
     bi_encoder = SentenceTransformer(
@@ -38,321 +21,322 @@ def load_models():
     return bi_encoder, cross_encoder
 
 
+@st.cache_data
+def process_document(file_content, file_type, chunking_method):
+    full_document_text = ""
+    if file_type == "application/pdf":
+        try:
+            # Menggunakan file_content langsung karena sudah berupa byte-like object
+            pdf = PdfReader(file_content)
+            full_document_text = "\n".join(
+                page.extract_text() for page in pdf.pages if page.extract_text()
+            )
+        except Exception as e:
+            st.error(f"Gagal membaca PDF: {e}")
+            return []
+    else:  # TXT
+        try:
+            full_document_text = file_content.getvalue().decode("utf-8")
+        except Exception as e:
+            st.error(f"Gagal membaca TXT: {e}")
+            return []
+
+    cleaned_text = clean_text(full_document_text)
+    if chunking_method == "Per Pasal":
+        return chunk_by_pasal(cleaned_text)
+    else:  # Per BAB
+        return chunk_by_bab(cleaned_text)
+
+
+def clean_text(full_text):
+    cleaned_text = re.sub(r"([a-zA-Z,])\n([a-zA-Z])", r"\1 \2", full_text)
+    cleaned_text = re.sub(r"\n\s*\n", "\n\n", cleaned_text)
+    return cleaned_text
+
+
+def chunk_by_pasal(cleaned_text):
+    parts = re.split(r"(\n\s*Pasal\s+\d+[A-Z]?)", cleaned_text, flags=re.IGNORECASE)
+    passages = [parts[0].strip()] if parts[0].strip() else []
+    for i in range(1, len(parts), 2):
+        if i + 1 < len(parts):
+            chunk = (parts[i] + parts[i + 1]).strip()
+            if len(chunk) > 70 and chunk.lower().count("pasal") < 4:
+                passages.append(chunk)
+    return passages
+
+
+def chunk_by_bab(cleaned_text):
+    parts = re.split(
+        r"(\n\s*BAB\s+[IVXLCDM]+.*|ATURAN\s+PERALIHAN|ATURAN\s+TAMBAHAN)",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    passages = [parts[0].strip()] if parts[0].strip() else []
+    for i in range(1, len(parts), 2):
+        if i + 1 < len(parts):
+            chunk = (parts[i] + parts[i + 1]).strip()
+            if len(chunk) > 100:
+                passages.append(chunk)
+    return passages
+
+
+# --- Fungsi untuk Placeholder ---
+def display_placeholder():
+    st.markdown(
+        """
+        <div style="
+            background-color: #f8f9fa;
+            border: 2px dashed #e9ecef;
+            border-radius: 0.5rem;
+            padding: 3rem 1rem;
+            text-align: center;
+            margin-top: 1rem;
+        ">
+            <h3 style="color: #6c757d;">Menunggu Analisis</h3>
+            <p style="color: #6c757d; font-size: 1.1em;">
+                Silakan klik tombol <b>'Jalankan Analisis'</b> di sidebar untuk menampilkan hasilnya di sini.
+            </p>
+        </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+# --- UI Aplikasi ---
 bi_encoder, cross_encoder = load_models()
 
-# 4. The rest of your Streamlit app
-st.title("📄 Perbandingan Bi-Encoder dan Cross-Encoder dari Sentence Transformers")
-st.caption(
-    "Aplikasi ini membandingkan performa model Bi-Encoder (msmarco-distilbert-base-v3) dan Cross-Encoder (ms-marco-MiniLM-L-6-v2) dalam Information Retrieval."
-)
+st.title("🔬 Aplikasi Komparasi Model Information Retrieval Korpus UUD NKRI 1945")
+st.caption("Membandingkan Kinerja Bi-Encoder vs. Cross-Encoder dengan Berbagai Metrik")
 
-st.markdown("Unggah file `.txt` atau `.pdf`, lalu masukkan query yang ingin dicari.")
+with st.sidebar:
+    st.header("⚙️ Pengaturan Analisis")
+    uploaded_file = st.file_uploader("Unggah Dokumen (PDF/TXT)", type=["pdf", "txt"])
+    chunking_method = st.radio(
+        "Metode Pemisahan Passages:",
+        ("Per Pasal", "Per BAB"),
+        help="**Per Pasal**: Granularitas tinggi, baik untuk query spesifik. **Per BAB**: Konteks luas, baik untuk query konseptual.",
+    )
+    query = st.text_area("Masukkan Query:", "hak dan kewajiban warga negara")
 
-# Upload File
-uploaded_file = st.file_uploader("Unggah dokumen (PDF/TXT)", type=["pdf", "txt"])
-passages = []
+    # Tombol Jalankan Analisis
+    run_button = st.button(
+        "🔍 Jalankan Analisis",
+        use_container_width=True,
+        type="primary",
+        disabled=(not uploaded_file),
+    )
 
-
-def extract_passages(text):
-    if not isinstance(text, str):
-        text = str(text)
-    sentences = sent_tokenize(text)
-    return [s.strip() for s in sentences if len(s.strip()) > 10]
-
-
+# Proses dokumen hanya sekali saat file berubah
 if uploaded_file:
-    if uploaded_file.type == "application/pdf":
-        pdf = PdfReader(uploaded_file)
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                passages.extend(extract_passages(text))
-    elif uploaded_file.type == "text/plain":
-        stringio = uploaded_file.getvalue().decode("utf-8")
-        passages = extract_passages(stringio)
+    # Menggunakan session state untuk menyimpan passages agar tidak diproses ulang terus-menerus
+    if (
+        "current_file" not in st.session_state
+        or st.session_state.current_file != uploaded_file.name
+        or st.session_state.chunk_method != chunking_method
+    ):
+        st.session_state.current_file = uploaded_file.name
+        st.session_state.chunk_method = chunking_method
+        st.session_state.passages = process_document(
+            uploaded_file, uploaded_file.type, chunking_method
+        )
+        st.session_state.results_generated = (
+            False  # Reset hasil jika file/metode berubah
+        )
+        st.sidebar.success(
+            f"✅ Dokumen diproses.\n\n**{len(st.session_state.passages)}** passages terdeteksi."
+        )
 
-st.write(f"📘 Jumlah passages terdeteksi: {len(passages)}")
+    passages = st.session_state.passages
 
-query = st.text_input("Masukkan Query:", "Apa manfaat AI dalam kehidupan sehari-hari?")
+    # Logika saat tombol ditekan
+    if run_button:
+        if not query or not passages:
+            st.warning("Harap isi query dan pastikan dokumen terproses dengan benar.")
+        else:
+            with st.spinner("⏳ Menganalisis relevansi..."):
+                scores_bi = bi_encoder.encode(query, convert_to_tensor=True)
+                passage_embs = bi_encoder.encode(passages, convert_to_tensor=True)
+                from sentence_transformers.util import cos_sim
 
-if st.button("🔍 Jalankan"):
-    if not query or not passages:
-        st.warning("Harap unggah file dan isi query.")
-    else:
-        with st.spinner(
-            "⏳ Menjalankan model... Ini mungkin memakan waktu beberapa saat."
-        ):
-            query_emb = bi_encoder.encode(query)
-            passage_embs = bi_encoder.encode(passages)
-            scores_bi = [
-                torch.cosine_similarity(
-                    torch.tensor(query_emb), torch.tensor(p), dim=0
-                ).item()
-                for p in passage_embs
-            ]
+                scores_bi = cos_sim(scores_bi, passage_embs)[0].cpu().tolist()
 
-            pairs = [[query, passage] for passage in passages]
-            scores_cross = cross_encoder.predict(
-                pairs
-            ).tolist()  # Pastikan tolist() jika output numpy array
+                pairs = [[query, passage] for passage in passages]
+                scores_cross = cross_encoder.predict(pairs).tolist()
 
-            st.session_state.results_generated = True
-            st.session_state.passages_processed = passages[:]
-            st.session_state.scores_bi = scores_bi[:]
-            st.session_state.scores_cross = scores_cross[:]
+                results = []
+                for i in range(len(passages)):
+                    results.append(
+                        {
+                            "passage": passages[i],
+                            "score_bi": scores_bi[i],
+                            "score_cross": scores_cross[i],
+                        }
+                    )
+                st.session_state.results = results
+                st.session_state.results_generated = True
 
-            # --- Perubahan Dimulai Di Sini ---
-            passage_to_score_bi = {
-                p: s
-                for p, s in zip(
-                    st.session_state.passages_processed, st.session_state.scores_bi
-                )
-            }
-            passage_to_score_cross = {
-                p: s
-                for p, s in zip(
-                    st.session_state.passages_processed, st.session_state.scores_cross
-                )
-            }
+# --- Tampilan Utama dengan Tab ---
+if uploaded_file:
+    tab1, tab2, tab3 = st.tabs(
+        ["📊 Perbandingan Peringkat", "📈 Metrik & Statistik", "📉 Grafik Skor"]
+    )
 
-            # Buat daftar passage yang diurutkan berdasarkan skor untuk setiap model
-            # (passage, score)
-            sorted_by_bi = sorted(
-                passage_to_score_bi.items(), key=lambda item: item[1], reverse=True
+    # Logika untuk menampilkan konten tab atau placeholder
+    is_results_ready = st.session_state.get("results_generated", False)
+
+    with tab1:
+        if is_results_ready:
+            results = st.session_state.results
+            sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
+            sorted_cross = sorted(results, key=lambda x: x["score_cross"], reverse=True)
+            df_bi = pd.DataFrame(
+                [
+                    {"Rank": i + 1, "Passage": res["passage"], "Score": res["score_bi"]}
+                    for i, res in enumerate(sorted_bi)
+                ]
             )
-            sorted_by_cross = sorted(
-                passage_to_score_cross.items(), key=lambda item: item[1], reverse=True
-            )
-
-            # Buat pemetaan passage ke rank untuk setiap model
-            # {passage_text: rank_number}
-            passage_to_rank_bi = {
-                passage: rank + 1 for rank, (passage, score) in enumerate(sorted_by_bi)
-            }
-            passage_to_rank_cross = {
-                passage: rank + 1
-                for rank, (passage, score) in enumerate(sorted_by_cross)
-            }
-
-            # Simpan hasil urutan Bi-Encoder (digunakan juga untuk perbandingan Top-1)
-            st.session_state.sorted_bi_results = sorted_by_bi
-
-            table_data = []
-            # Iterasi berdasarkan urutan Bi-Encoder sebagai default tampilan tabel
-            for i, (passage_text, bi_score_val) in enumerate(
-                st.session_state.sorted_bi_results
-            ):
-                bi_actual_rank = i + 1  # Rank Bi-Encoder sesuai urutan iterasi
-                cross_score_val = passage_to_score_cross.get(passage_text, 0.0)
-                cross_actual_rank = passage_to_rank_cross.get(
-                    passage_text
-                )  # Dapatkan rank Cross-Encoder untuk passage ini
-
-                table_data.append(
+            df_cross = pd.DataFrame(
+                [
                     {
-                        "Passage": passage_text.replace("\n", " ").replace("\r", " "),
-                        "Bi-Encoder Rank": bi_actual_rank,
-                        "Bi-Encoder Score": bi_score_val,  # Biarkan sebagai float
-                        "Cross-Encoder Rank": cross_actual_rank,
-                        "Cross-Encoder Score": cross_score_val,  # Biarkan sebagai float
+                        "Rank": i + 1,
+                        "Passage": res["passage"],
+                        "Score": res["score_cross"],
                     }
-                )
-            st.session_state.table_data = table_data
-            # --- Perubahan Selesai Di Sini ---
-
-            # Untuk perbandingan top-1, sorted_cross_passages_only masih relevan
-            st.session_state.sorted_cross_passages_only = [
-                item[0] for item in sorted_by_cross
-            ]
-
-            st.session_state.page = 1
-
-if "page" not in st.session_state:
-    st.session_state.page = 1
-
-if st.session_state.get("results_generated", False):
-    st.info("Hasil Perbandingan Model:")
-    table_data_to_display = st.session_state.get("table_data", [])
-
-    if not table_data_to_display:
-        st.warning("Tidak ada data untuk ditampilkan. Coba jalankan ulang.")
-    else:
-        page_size = 10
-        total_pages = math.ceil(len(table_data_to_display) / page_size)
-
-        if total_pages > 0:
-            col1, col2, col3 = st.columns([1, 3, 1])
-            with col1:
-                if st.session_state.page > 1:
-                    if st.button("⬅️ Prev"):
-                        st.session_state.page -= 1
-                        st.rerun()
-            with col3:
-                if st.session_state.page < total_pages:
-                    if st.button("Next ➡️"):
-                        st.session_state.page += 1
-                        st.rerun()
-            with col2:
-                max_page_val = max(1, total_pages)
-                selected_page = st.number_input(
-                    f"Halaman (1-{total_pages})",
-                    min_value=1,
-                    max_value=max_page_val,
-                    value=st.session_state.page,
-                    step=1,
-                    key="page_selector",
-                )
-                if selected_page != st.session_state.page:
-                    st.session_state.page = selected_page
-                    st.rerun()
-        else:
-            st.write("Tidak ada data untuk dipaginasi.")
-
-        start_idx = (st.session_state.page - 1) * page_size
-        end_idx = start_idx + page_size
-        current_page_data = table_data_to_display[start_idx:end_idx]
-
-        df_table = pd.DataFrame(current_page_data)
-
-        # --- Perubahan untuk Tampilan DataFrame ---
-        # Tentukan urutan kolom yang diinginkan
-        column_order = [
-            "Passage",
-            "Bi-Encoder Rank",
-            "Bi-Encoder Score",
-            "Cross-Encoder Rank",
-            "Cross-Encoder Score",
-        ]
-        # Filter kolom yang ada di DataFrame untuk menghindari error jika ada yang hilang
-        columns_to_display = [col for col in column_order if col in df_table.columns]
-
-        # Konfigurasi kolom untuk format angka
-        column_config_display = {
-            "Bi-Encoder Score": st.column_config.NumberColumn(format="%.4f"),
-            "Cross-Encoder Score": st.column_config.NumberColumn(format="%.4f"),
-            "Bi-Encoder Rank": st.column_config.NumberColumn(format="%d"),
-            "Cross-Encoder Rank": st.column_config.NumberColumn(format="%d"),
-        }
-        st.dataframe(
-            df_table[columns_to_display],
-            use_container_width=True,
-            hide_index=True,
-            column_config=column_config_display,
-        )
-        # --- Perubahan Selesai ---
-
-        st.markdown("---")
-        st.subheader("📊 Evaluasi dan Statistik")
-
-        current_scores_bi = st.session_state.get("scores_bi", [])
-        current_scores_cross = st.session_state.get("scores_cross", [])
-
-        def compute_mrr(scores):
-            scores_list = list(scores)
-            if not scores_list:
-                return 0.0
-            if not any(isinstance(s, (int, float)) for s in scores_list):
-                return 0.0
-            max_score = max(scores_list)
-            try:
-                return (
-                    1 / (scores_list.index(max_score) + 1)
-                    if max_score in scores_list
-                    else 0.0
-                )
-            except ValueError:
-                return 0.0
-
-        mrr_bi = compute_mrr(current_scores_bi)
-        mrr_cross = compute_mrr(current_scores_cross)
-
-        st.markdown(f"**Mean Reciprocal Rank (MRR) - *berdasarkan skor tertinggi***:")
-        st.write(f"🔹 Bi-Encoder: `{mrr_bi:.3f}`")
-        st.write(f"🔹 Cross-Encoder: `{mrr_cross:.3f}`")
-        st.caption(
-            "_Catatan: MRR di sini dihitung sebagai 1 dibagi dengan rank dari passage dengan skor tertinggi yang ditemukan oleh masing-masing model._"
-        )
-
-        st.markdown("**Apakah Top-1 Sama?**")
-        top_bi_passage = (
-            st.session_state.sorted_bi_results[0][0]
-            if st.session_state.sorted_bi_results
-            else None
-        )
-        top_cross_passage = (
-            st.session_state.sorted_cross_passages_only[0]
-            if st.session_state.sorted_cross_passages_only
-            else None
-        )
-
-        if top_bi_passage and top_cross_passage:
-            if top_bi_passage == top_cross_passage:
-                st.success("✅ Kedua model memilih passage paling relevan yang sama.")
-                st.markdown(
-                    f"<small>Passage: `{top_bi_passage[:100].replace('`','')}...`</small>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.warning("❌ Model berbeda dalam menentukan passage paling relevan.")
-                st.markdown(
-                    f"<small>Top Bi-Encoder: `{top_bi_passage[:100].replace('`','')}...`</small>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"<small>Top Cross-Encoder: `{top_cross_passage[:100].replace('`','')}...`</small>",
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.info("Tidak dapat menentukan top-1 passage (mungkin tidak ada hasil).")
-
-        df_chart_data = pd.DataFrame(
-            {
-                "Passage": st.session_state.passages_processed,
-                "Bi-Encoder Score": st.session_state.scores_bi,
-                "Cross-Encoder Score": st.session_state.scores_cross,
-            }
-        )
-
-        MAX_PASSAGES_IN_CHART = 20
-        if len(df_chart_data) > MAX_PASSAGES_IN_CHART:
-            # Menggunakan sorted_bi_results untuk mendapatkan top N passages
-            top_n_passages_for_chart = [
-                item[0]
-                for item in st.session_state.sorted_bi_results[:MAX_PASSAGES_IN_CHART]
-            ]
-            df_chart_data = df_chart_data[
-                df_chart_data["Passage"].isin(top_n_passages_for_chart)
-            ]
-            st.caption(
-                f"Grafik menampilkan skor untuk {min(MAX_PASSAGES_IN_CHART, len(st.session_state.passages_processed))} passage teratas (berdasarkan Bi-Encoder)."
+                    for i, res in enumerate(sorted_cross)
+                ]
             )
 
-        if not df_chart_data.empty:
-            chart = (
-                alt.Chart(df_chart_data.reset_index())
-                .transform_fold(
-                    ["Bi-Encoder Score", "Cross-Encoder Score"], as_=["Model", "Score"]
+            st.header("Tabel Peringkat Hasil")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Peringkat Bi-Encoder")
+                st.dataframe(
+                    df_bi,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn(
+                            format="%.4f", min_value=0, max_value=1
+                        )
+                    },
                 )
+            with col2:
+                st.subheader("Peringkat Cross-Encoder")
+                st.dataframe(
+                    df_cross,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Score": st.column_config.ProgressColumn(format="%.4f")
+                    },
+                )
+        else:
+            display_placeholder()
+
+    with tab2:
+        if is_results_ready:
+            results = st.session_state.results
+            sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
+            sorted_cross = sorted(results, key=lambda x: x["score_cross"], reverse=True)
+
+            st.header("Metrik Evaluasi & Statistik")
+            st.subheader("Perbandingan Hasil Peringkat Teratas (Top-1)")
+            top_bi_passage = sorted_bi[0]["passage"]
+            top_cross_passage = sorted_cross[0]["passage"]
+
+            if top_bi_passage == top_cross_passage:
+                st.success("✅ Kedua model setuju pada passage paling relevan.")
+                with st.expander("Lihat Passage Teratas"):
+                    st.info(top_bi_passage)
+            else:
+                st.warning("❌ Kedua model berbeda dalam menentukan passage teratas.")
+                with st.expander("Lihat Perbandingan Passage Teratas"):
+                    c1, c2 = st.columns(2)
+                    c1.info(f"**Bi-Encoder:**\n\n{top_bi_passage}")
+                    c2.info(f"**Cross-Encoder:**\n\n{top_cross_passage}")
+            st.markdown("---")
+            st.subheader("Metrik Kuantitatif")
+
+            mrr_bi = 1 / (pd.Series([r["score_bi"] for r in sorted_bi]).idxmax() + 1)
+            mrr_cross = 1 / (
+                pd.Series([r["score_cross"] for r in sorted_cross]).idxmax() + 1
+            )
+
+            bi_rank_map = {res["passage"]: i for i, res in enumerate(sorted_bi)}
+            cross_ranks_for_bi_order = [0] * len(sorted_bi)
+            for i, res in enumerate(sorted_cross):
+                if res["passage"] in bi_rank_map:
+                    cross_ranks_for_bi_order[bi_rank_map[res["passage"]]] = i
+            tau, p_value = kendalltau(range(len(results)), cross_ranks_for_bi_order)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric(label="MRR Bi-Encoder", value=f"{mrr_bi:.4f}")
+                st.metric(label="MRR Cross-Encoder", value=f"{mrr_cross:.4f}")
+            with c2:
+                st.metric(
+                    label="Korelasi Peringkat (Kendall's Tau)", value=f"{tau:.4f}"
+                )
+                st.caption(f"P-value: {p_value:.4f}")
+
+            with st.expander("Penjelasan Metrik"):
+                st.markdown("""...""")  # Penjelasan metrik sama seperti sebelumnya
+        else:
+            display_placeholder()
+
+    with tab3:
+        if is_results_ready:
+            results = st.session_state.results
+            sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
+            top_n = 20
+            chart_data = sorted_bi[:top_n]
+            df_chart = pd.DataFrame(chart_data)
+
+            st.header("Grafik Perbandingan Skor")
+            st.caption(
+                f"Grafik menampilkan perbandingan skor untuk {min(top_n, len(df_chart))} passages teratas menurut Bi-Encoder."
+            )
+
+            df_melted = df_chart.melt(
+                id_vars="passage",
+                value_vars=["score_bi", "score_cross"],
+                var_name="model",
+                value_name="score",
+            )
+            df_melted["model"] = df_melted["model"].map(
+                {"score_bi": "Bi-Encoder", "score_cross": "Cross-Encoder"}
+            )
+
+            chart = (
+                alt.Chart(df_melted)
                 .mark_bar()
                 .encode(
-                    x=alt.X("Score:Q", title="Skor Relevansi"),
+                    x=alt.X("score:Q", title="Skor Relevansi"),
                     y=alt.Y(
-                        "Passage:N",
+                        "passage:N",
                         sort=alt.EncodingSortField(
-                            field="Score", op="max", order="descending"
+                            field="score", op="max", order="descending"
                         ),
                         title="Passage",
+                        axis=alt.Axis(labelLimit=300),
                     ),
-                    color="Model:N",
-                    tooltip=["Passage:N", "Model:N", "Score:Q"],
+                    color=alt.Color("model:N", title="Model"),
+                    tooltip=[
+                        alt.Tooltip("passage:N", title="Passage"),
+                        alt.Tooltip("model:N", title="Model"),
+                        alt.Tooltip("score:Q", title="Score", format=".4f"),
+                    ],
                 )
                 .properties(
-                    height=max(300, len(df_chart_data["Passage"].unique()) * 25)
-                )  # Sedikit menambah tinggi per item
+                    title=f"Perbandingan Skor untuk Top {min(top_n, len(df_chart))} Passages",
+                    height=alt.Step(25),
+                )
             )
+
             st.altair_chart(chart, use_container_width=True)
         else:
-            st.write("Tidak cukup data untuk menampilkan grafik.")
-
-elif not uploaded_file or not query:
-    st.info("Silakan unggah dokumen dan masukkan query, lalu klik 'Jalankan'.")
+            display_placeholder()
+else:
+    st.info(
+        "Selamat datang! Silakan unggah dokumen di sidebar kiri untuk memulai analisis korpus UUD NKRI 1945."
+    )
