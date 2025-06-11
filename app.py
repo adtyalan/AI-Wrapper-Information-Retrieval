@@ -281,13 +281,10 @@ if uploaded_file:
 
             with st.expander("Penjelasan Metrik"):
                 st.markdown(
-                    """**Mean Reciprocal Rank (MRR)** mengukur seberapa cepat dokumen relevan pertama muncul dalam hasil pencarian, sedangkan **Kendall Tau** menilai kesamaan urutan antara peringkat hasil pencarian dengan peringkat ideal yang diharapkan"""
+                    """1. **MRR (Mean Reciprocal Rank)**: Memberi Anda gambaran seberapa cepat masing-masing model menemukan passage yang menurutnya sendiri paling relevan. Ini adalah metrik performa individu yang baik dalam konteks ini. Semakin tinggi **MRR**, berarti dokumen relevan muncul lebih cepat dalam hasil pencarian, menunjukkan efektivitas sistem dalam menampilkan informasi yang diharapkan."""
                 )
                 st.markdown(
-                    """Semakin **tinggi skor MRR**, berarti dokumen relevan muncul lebih cepat dalam hasil pencarian, menunjukkan efektivitas sistem dalam menampilkan informasi yang diharapkan. Sebaliknya, **skor MRR yang rendah** menandakan bahwa pengguna harus mencari lebih jauh sebelum menemukan hasil yang relevan."""
-                )
-                st.markdown(
-                    """Untuk **Kendall Tau**, skor yang **tinggi** berarti urutan hasil pencarian sangat mirip dengan peringkat ideal, menandakan kesesuaian sistem dalam menyusun relevansi dokumen. Jika skornya **rendah** atau bahkan negatif, berarti urutan hasil pencarian jauh berbeda dari yang seharusnya, menunjukkan bahwa model perlu diperbaiki agar memberikan ranking yang lebih akurat."""
+                    """2. **Kendall's Tau (Korelasi Peringkat)**: Memberi Anda gambaran seberapa "sepakat" atau "tidak sepakat" kedua model tersebut dalam menyusun keseluruhan daftar peringkat. Ini adalah metrik perbandingan yang sangat kuat. Untuk **Kendall Tau**, skor yang tinggi berarti urutan hasil pencarian sangat mirip dengan peringkat ideal, menandakan kesesuaian sistem dalam menyusun relevansi dokumen."""
                 )
         else:
             display_placeholder()
