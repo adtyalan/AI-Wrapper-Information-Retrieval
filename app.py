@@ -26,7 +26,6 @@ def process_document(file_content, file_type, chunking_method):
     full_document_text = ""
     if file_type == "application/pdf":
         try:
-            # Menggunakan file_content langsung karena sudah berupa byte-like object
             pdf = PdfReader(file_content)
             full_document_text = "\n".join(
                 page.extract_text() for page in pdf.pages if page.extract_text()
@@ -80,22 +79,12 @@ def chunk_by_bab(cleaned_text):
     return passages
 
 
-# --- Fungsi untuk Placeholder ---
 def display_placeholder():
     st.markdown(
         """
-        <div style="
-            background-color: #f8f9fa;
-            border: 2px dashed #e9ecef;
-            border-radius: 0.5rem;
-            padding: 3rem 1rem;
-            text-align: center;
-            margin-top: 1rem;
-        ">
-            <h3 style="color: #6c757d;">Menunggu Analisis</h3>
-            <p style="color: #6c757d; font-size: 1.1em;">
-                Silakan klik tombol <b>'Jalankan Analisis'</b> di sidebar untuk menampilkan hasilnya di sini.
-            </p>
+        <div style="background-color:#f8f9fa; border:2px dashed #e9ecef; border-radius:0.5rem; padding:3rem 1rem; text-align:center; margin-top:1rem;">
+            <h3 style="color:#6c757d;">Menunggu Analisis</h3>
+            <p style="color:#6c757d; font-size:1.1em;">Silakan klik tombol <b>'Jalankan Analisis'</b> di sidebar untuk menampilkan hasilnya di sini.</p>
         </div>
     """,
         unsafe_allow_html=True,
@@ -105,12 +94,26 @@ def display_placeholder():
 # --- UI Aplikasi ---
 bi_encoder, cross_encoder = load_models()
 
-st.title("🔬 Aplikasi Komparasi Model Information Retrieval Korpus UUD NKRI 1945")
+st.title("🔬 Aplikasi Komparasi Model Information Retrieval")
 st.caption("Membandingkan Kinerja Bi-Encoder vs. Cross-Encoder dengan Berbagai Metrik")
 
+# --- PERUBAHAN DIMULAI DI SINI ---
 with st.sidebar:
     st.header("⚙️ Pengaturan Analisis")
-    uploaded_file = st.file_uploader("Unggah Dokumen (PDF/TXT)", type=["pdf", "txt"])
+
+    st.subheader("1. Pilih Sumber Dokumen")
+    use_example_doc = st.checkbox(
+        "Gunakan Contoh Dokumen (UUD 1945)",
+        value=True,
+        help="Jika dicentang, akan menggunakan file UUD 1945 yang sudah tersedia. Anda perlu menempatkan file 'UUD1945.pdf' di direktori yang sama dengan aplikasi ini.",
+    )
+    uploaded_file = st.file_uploader(
+        "Atau Unggah Dokumen Anda (PDF/TXT)",
+        type=["pdf", "txt"],
+        disabled=use_example_doc,
+    )
+
+    st.subheader("2. Atur Parameter")
     chunking_method = st.radio(
         "Metode Pemisahan Passages:",
         ("Per Pasal", "Per BAB"),
@@ -119,25 +122,46 @@ with st.sidebar:
     query = st.text_area("Masukkan Query:", "hak dan kewajiban warga negara")
 
     # Tombol Jalankan Analisis
+    # Tombol akan dinonaktifkan jika tidak ada dokumen yang dipilih (baik contoh maupun unggahan)
+    is_doc_ready = use_example_doc or uploaded_file is not None
     run_button = st.button(
         "🔍 Jalankan Analisis",
         use_container_width=True,
         type="primary",
-        disabled=(not uploaded_file),
+        disabled=not is_doc_ready,
     )
+# --- PERUBAHAN SELESAI ---
 
-# Proses dokumen hanya sekali saat file berubah
-if uploaded_file:
+# --- Logika Pemrosesan ---
+document_source = None
+file_type = None
+
+if use_example_doc:
+    try:
+        document_source = open("UUD1945.pdf", "rb")
+        file_type = "application/pdf"
+    except FileNotFoundError:
+        st.error(
+            "File contoh 'UUD1945.pdf' tidak ditemukan. Pastikan file tersebut ada di direktori yang sama dengan `app.py`."
+        )
+        st.stop()
+elif uploaded_file:
+    document_source = uploaded_file
+    file_type = uploaded_file.type
+
+if document_source:
     # Menggunakan session state untuk menyimpan passages agar tidak diproses ulang terus-menerus
+    # Key unik berdasarkan nama file atau status checkbox
+    doc_id = "UUD1945_example" if use_example_doc else uploaded_file.name
     if (
-        "current_file" not in st.session_state
-        or st.session_state.current_file != uploaded_file.name
+        "current_doc_id" not in st.session_state
+        or st.session_state.current_doc_id != doc_id
         or st.session_state.chunk_method != chunking_method
     ):
-        st.session_state.current_file = uploaded_file.name
+        st.session_state.current_doc_id = doc_id
         st.session_state.chunk_method = chunking_method
         st.session_state.passages = process_document(
-            uploaded_file, uploaded_file.type, chunking_method
+            document_source, file_type, chunking_method
         )
         st.session_state.results_generated = (
             False  # Reset hasil jika file/metode berubah
@@ -148,44 +172,36 @@ if uploaded_file:
 
     passages = st.session_state.passages
 
-    # Logika saat tombol ditekan
     if run_button:
         if not query or not passages:
             st.warning("Harap isi query dan pastikan dokumen terproses dengan benar.")
         else:
             with st.spinner("⏳ Menganalisis relevansi..."):
+                # Sisa logika analisis sama persis
                 scores_bi = bi_encoder.encode(query, convert_to_tensor=True)
                 passage_embs = bi_encoder.encode(passages, convert_to_tensor=True)
                 from sentence_transformers.util import cos_sim
 
                 scores_bi = cos_sim(scores_bi, passage_embs)[0].cpu().tolist()
-
                 pairs = [[query, passage] for passage in passages]
                 scores_cross = cross_encoder.predict(pairs).tolist()
-
-                results = []
-                for i in range(len(passages)):
-                    results.append(
-                        {
-                            "passage": passages[i],
-                            "score_bi": scores_bi[i],
-                            "score_cross": scores_cross[i],
-                        }
-                    )
+                results = [
+                    {"passage": p, "score_bi": sb, "score_cross": sc}
+                    for p, sb, sc in zip(passages, scores_bi, scores_cross)
+                ]
                 st.session_state.results = results
                 st.session_state.results_generated = True
 
-# --- Tampilan Utama dengan Tab ---
-if uploaded_file:
+# --- Tampilan Hasil dengan Tab ---
+if document_source:
     tab1, tab2, tab3 = st.tabs(
         ["📊 Perbandingan Peringkat", "📈 Metrik & Statistik", "📉 Grafik Skor"]
     )
-
-    # Logika untuk menampilkan konten tab atau placeholder
     is_results_ready = st.session_state.get("results_generated", False)
 
     with tab1:
         if is_results_ready:
+            # Kode untuk menampilkan tabel (sama seperti sebelumnya)
             results = st.session_state.results
             sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
             sorted_cross = sorted(results, key=lambda x: x["score_cross"], reverse=True)
@@ -205,7 +221,6 @@ if uploaded_file:
                     for i, res in enumerate(sorted_cross)
                 ]
             )
-
             st.header("Tabel Peringkat Hasil")
             col1, col2 = st.columns(2)
             with col1:
@@ -233,17 +248,18 @@ if uploaded_file:
         else:
             display_placeholder()
 
+    # Kode untuk tab2 dan tab3 sama persis dengan versi sebelumnya,
+    # masing-masing dengan blok `if is_results_ready: ... else: display_placeholder()`
     with tab2:
         if is_results_ready:
+            # (Salin kode dari tab2 versi sebelumnya ke sini)
             results = st.session_state.results
             sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
             sorted_cross = sorted(results, key=lambda x: x["score_cross"], reverse=True)
-
             st.header("Metrik Evaluasi & Statistik")
             st.subheader("Perbandingan Hasil Peringkat Teratas (Top-1)")
             top_bi_passage = sorted_bi[0]["passage"]
             top_cross_passage = sorted_cross[0]["passage"]
-
             if top_bi_passage == top_cross_passage:
                 st.success("✅ Kedua model setuju pada passage paling relevan.")
                 with st.expander("Lihat Passage Teratas"):
@@ -256,19 +272,16 @@ if uploaded_file:
                     c2.info(f"**Cross-Encoder:**\n\n{top_cross_passage}")
             st.markdown("---")
             st.subheader("Metrik Kuantitatif")
-
             mrr_bi = 1 / (pd.Series([r["score_bi"] for r in sorted_bi]).idxmax() + 1)
             mrr_cross = 1 / (
                 pd.Series([r["score_cross"] for r in sorted_cross]).idxmax() + 1
             )
-
             bi_rank_map = {res["passage"]: i for i, res in enumerate(sorted_bi)}
             cross_ranks_for_bi_order = [0] * len(sorted_bi)
             for i, res in enumerate(sorted_cross):
                 if res["passage"] in bi_rank_map:
                     cross_ranks_for_bi_order[bi_rank_map[res["passage"]]] = i
             tau, p_value = kendalltau(range(len(results)), cross_ranks_for_bi_order)
-
             c1, c2 = st.columns(2)
             with c1:
                 st.metric(label="MRR Bi-Encoder", value=f"{mrr_bi:.4f}")
@@ -278,7 +291,6 @@ if uploaded_file:
                     label="Korelasi Peringkat (Kendall's Tau)", value=f"{tau:.4f}"
                 )
                 st.caption(f"P-value: {p_value:.4f}")
-
             with st.expander("Penjelasan Metrik"):
                 st.markdown(
                     """1. **MRR (Mean Reciprocal Rank)**: Memberi Anda gambaran seberapa cepat masing-masing model menemukan passage yang menurutnya sendiri paling relevan. Ini adalah metrik performa individu yang baik dalam konteks ini. Semakin tinggi **MRR**, berarti dokumen relevan muncul lebih cepat dalam hasil pencarian, menunjukkan efektivitas sistem dalam menampilkan informasi yang diharapkan."""
@@ -291,17 +303,16 @@ if uploaded_file:
 
     with tab3:
         if is_results_ready:
+            # (Salin kode dari tab3 versi sebelumnya ke sini)
             results = st.session_state.results
             sorted_bi = sorted(results, key=lambda x: x["score_bi"], reverse=True)
             top_n = 20
             chart_data = sorted_bi[:top_n]
             df_chart = pd.DataFrame(chart_data)
-
             st.header("Grafik Perbandingan Skor")
             st.caption(
                 f"Grafik menampilkan perbandingan skor untuk {min(top_n, len(df_chart))} passages teratas menurut Bi-Encoder."
             )
-
             df_melted = df_chart.melt(
                 id_vars="passage",
                 value_vars=["score_bi", "score_cross"],
@@ -311,7 +322,6 @@ if uploaded_file:
             df_melted["model"] = df_melted["model"].map(
                 {"score_bi": "Bi-Encoder", "score_cross": "Cross-Encoder"}
             )
-
             chart = (
                 alt.Chart(df_melted)
                 .mark_bar()
@@ -337,11 +347,10 @@ if uploaded_file:
                     height=alt.Step(25),
                 )
             )
-
             st.altair_chart(chart, use_container_width=True)
         else:
             display_placeholder()
 else:
     st.info(
-        "Selamat datang! Silakan unggah dokumen di sidebar kiri untuk memulai analisis korpus UUD NKRI 1945."
+        "👋 Selamat Datang! Untuk memulai, pilih sumber dokumen Anda di sidebar kiri."
     )
