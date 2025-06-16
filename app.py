@@ -95,7 +95,9 @@ def display_placeholder():
 bi_encoder, cross_encoder = load_models()
 
 st.title("🔬 Aplikasi Komparasi Model Information Retrieval")
-st.caption("Membandingkan Kinerja Bi-Encoder vs. Cross-Encoder dengan Berbagai Metrik")
+st.caption(
+    "Membandingkan Kinerja Bi-Encoder vs. Cross-Encoder dengan Berbagai Metrik  \n Pengembang: Alan Aditya  \n Model: MSMarco DistilBERT & MSMarco MiniLM  \n Dataset: UUD 1945.pdf - jdihn.go.id"
+)
 
 # --- PERUBAHAN DIMULAI DI SINI ---
 with st.sidebar:
